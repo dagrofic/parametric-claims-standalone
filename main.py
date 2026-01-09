@@ -346,15 +346,15 @@ def fetch_chirps_data(latitude: float, longitude: float,
         raise
 
 # ============================================================================
-# BUSCA DE DADOS - TEMPERATURA (ERA5 Daily Aggregates via Earth Engine)
+# BUSCA DE DADOS - TEMPERATURA (ERA5-Land via Earth Engine)
 # ============================================================================
 
 def fetch_agera5_data(latitude: float, longitude: float,
                       start_date: str, end_date: str,
                       statistic: str = '24_hour_minimum') -> list:
     """
-    Busca dados de temperatura do ERA5 Daily Aggregates via Google Earth Engine.
-    Usa o dataset ECMWF/ERA5_DAILY que já tem temperaturas min/max/mean diárias pré-calculadas.
+    Busca dados de temperatura do ERA5-Land via Google Earth Engine.
+    Usa dados horários e agrega por dia para obter min/max/mean.
     
     Args:
         latitude: Latitude do ponto
@@ -394,40 +394,59 @@ def fetch_agera5_data(latitude: float, longitude: float,
         end_dt = datetime.strptime(end_date, '%Y-%m-%d') + timedelta(days=1)
         end_date_adjusted = end_dt.strftime('%Y-%m-%d')
         
-        # Determinar qual banda usar baseado na estatística
-        # ERA5_DAILY já tem as temperaturas diárias pré-calculadas
+        # Determinar qual reducer usar baseado na estatística
         if 'minimum' in statistic.lower() or 'min' in statistic.lower():
-            band_name = 'minimum_2m_air_temperature'
+            reducer_name = 'min'
         elif 'maximum' in statistic.lower() or 'max' in statistic.lower():
-            band_name = 'maximum_2m_air_temperature'
+            reducer_name = 'max'
         else:
-            band_name = 'mean_2m_air_temperature'
+            reducer_name = 'mean'
         
-        # Buscar coleção ERA5 Daily Aggregates
-        collection = ee.ImageCollection('ECMWF/ERA5_DAILY') \
+        # Buscar coleção ERA5-Land (temperatura a 2m)
+        collection = ee.ImageCollection('ECMWF/ERA5_LAND/HOURLY') \
             .filterDate(start_date, end_date_adjusted) \
             .filterBounds(point) \
-            .select(band_name)
+            .select('temperature_2m')
         
-        # Função para extrair valor de cada imagem
-        def extract_value(image):
-            # Extrair data da imagem
-            date = ee.Date(image.get('system:time_start'))
+        # Gerar lista de datas
+        start_dt = datetime.strptime(start_date, '%Y-%m-%d')
+        end_dt_obj = datetime.strptime(end_date, '%Y-%m-%d')
+        
+        dates = []
+        current = start_dt
+        while current <= end_dt_obj:
+            dates.append(current.strftime('%Y-%m-%d'))
+            current += timedelta(days=1)
+        
+        # Função para obter temperatura diária
+        def get_daily_temp(date_str):
+            date = ee.Date(date_str)
+            next_date = date.advance(1, 'day')
+            daily = collection.filterDate(date, next_date)
+            
+            # Aplicar reducer (min, max ou mean)
+            if reducer_name == 'min':
+                daily_image = daily.min()
+            elif reducer_name == 'max':
+                daily_image = daily.max()
+            else:
+                daily_image = daily.mean()
             
             # Extrair valor no ponto
-            value = image.reduceRegion(
+            value = daily_image.reduceRegion(
                 reducer=ee.Reducer.first(),
                 geometry=point,
-                scale=27830  # Resolução do ERA5 (~27km)
-            ).get(band_name)
+                scale=11132
+            ).get('temperature_2m')
             
             return ee.Feature(None, {
                 'date': date.format('yyyy-MM-dd'),
                 'value': value
             })
         
-        # Mapear sobre a coleção
-        features = collection.map(extract_value)
+        # Converter para lista Earth Engine e mapear
+        date_list = ee.List(dates)
+        features = date_list.map(get_daily_temp)
         result = ee.FeatureCollection(features).getInfo()
         
         # Formatar resultado
