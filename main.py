@@ -162,14 +162,22 @@ def parse_html_content(html_content: str) -> dict:
         except ValueError:
             pass
     
-    exit_match = re.search(r'[Ee]xit\s*[Pp]oint[:\s]*(\d+\.?\d*)', html_content)
-    if exit_match:
-        try:
-            val = exit_match.group(1)
-            if val and val != '.':
-                result['exit_point'] = float(val)
-        except ValueError:
-            pass
+    # Tentar vários padrões para Exit Point
+    exit_patterns = [
+        r'[Ee]xit\s*[Pp]oint[:\s]*(\d+\.?\d*)',  # Exit Point: 0
+        r'[Ee]xit\s*:\s*(\d+\.?\d*)\s*(?:mm)?',   # Exit :0 mm ou Exit : 0
+        r'[Ee]xit\s*=\s*(\d+\.?\d*)',             # Exit = 0
+    ]
+    for pattern in exit_patterns:
+        exit_match = re.search(pattern, html_content)
+        if exit_match:
+            try:
+                val = exit_match.group(1)
+                if val and val != '.':
+                    result['exit_point'] = float(val)
+                    break
+            except ValueError:
+                pass
     
     limit_match = re.search(r'[Ll]imit[:\s]*([\d,]+\.?\d*)', html_content)
     if limit_match:
@@ -251,7 +259,7 @@ def fetch_chirps_data(latitude: float, longitude: float,
                 scale=5566
             ).get('precipitation')
             return ee.Feature(None, {
-                'date': image.date().format('YYYY-MM-DD'),
+                'date': image.date().format('yyyy-MM-dd'),
                 'value': value
             })
         
@@ -470,7 +478,17 @@ def generate_excel_report(params: dict, data: list, claim: dict,
     """
     # Criar DataFrame com dados diários
     df = pd.DataFrame(data)
-    df['date'] = pd.to_datetime(df['date'])
+    
+    # Converter datas com tratamento de erro
+    try:
+        df['date'] = pd.to_datetime(df['date'], format='%Y-%m-%d', errors='coerce')
+    except Exception:
+        # Se falhar, tentar conversão genérica
+        df['date'] = pd.to_datetime(df['date'], errors='coerce')
+    
+    # Remover linhas com datas inválidas
+    df = df.dropna(subset=['date'])
+    
     df = df.rename(columns={'date': 'Data', 'value': 'Valor'})
     
     # Adicionar linha de total/mínimo
