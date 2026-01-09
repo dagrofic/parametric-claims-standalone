@@ -564,7 +564,7 @@ def fetch_agera5_data_cds(latitude: float, longitude: float,
         print(f"Coordenadas: {latitude}, {longitude}")
         
         # Fazer requisição ao CDS
-        # Nota: O CDS requer variable, statistic e version separados
+        # Nota: O CDS requer variable, statistic, version e time
         client.retrieve(
             'sis-agrometeorological-indicators',
             {
@@ -573,6 +573,7 @@ def fetch_agera5_data_cds(latitude: float, longitude: float,
                 'year': years,
                 'month': months,
                 'day': days,
+                'time': '12_00',  # Hora obrigatória para AgERA5
                 'area': area,
                 'version': '1_1',
                 'format': 'netcdf'
