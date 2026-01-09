@@ -6,8 +6,50 @@ Aplicação Flask para processamento via navegador.
 
 import os
 import tempfile
+import threading
+import uuid
+import time
 from flask import Flask, render_template_string, request, send_file, jsonify
-from main import parse_html_content, fetch_chirps_data, fetch_agera5_data, calculate_claim, generate_excel_report
+from main import parse_html_content, fetch_chirps_data, fetch_agera5_data_cds, calculate_claim, generate_excel_report
+
+# Sistema de tarefas assíncronas
+tasks = {}
+tasks_lock = threading.Lock()
+
+def run_temperature_task(task_id, params):
+    """
+    Executa a busca de dados de temperatura em background.
+    """
+    try:
+        with tasks_lock:
+            tasks[task_id]['status'] = 'processing'
+            tasks[task_id]['message'] = 'Conectando ao CDS Copernicus...'
+        
+        # Buscar dados de temperatura do AgERA5
+        climate_data = fetch_agera5_data_cds(
+            params['latitude'],
+            params['longitude'],
+            params['period_start'],
+            params['period_end']
+        )
+        
+        # Calcular sinistro
+        claim = calculate_claim(climate_data, params)
+        
+        with tasks_lock:
+            tasks[task_id]['status'] = 'completed'
+            tasks[task_id]['result'] = {
+                'params': params,
+                'data': climate_data,
+                'claim': claim
+            }
+            tasks[task_id]['message'] = 'Processamento concluído!'
+            
+    except Exception as e:
+        with tasks_lock:
+            tasks[task_id]['status'] = 'error'
+            tasks[task_id]['error'] = str(e)
+            tasks[task_id]['message'] = f'Erro: {str(e)}'
 
 app = Flask(__name__)
 
@@ -270,6 +312,8 @@ HTML_TEMPLATE = '''
             }
         }
         
+        let pollingInterval = null;
+        
         async function processarRegulacao() {
             const htmlContent = document.getElementById('htmlContent').value;
             if (!htmlContent.trim()) {
@@ -294,15 +338,67 @@ HTML_TEMPLATE = '''
                     throw new Error(data.error);
                 }
                 
-                lastResult = data;
-                displayResult(data);
+                // Verificar se é processamento assíncrono
+                if (data.async) {
+                    // Iniciar polling para verificar status
+                    document.querySelector('#loading p').textContent = 'Buscando dados do AgERA5 (CDS Copernicus)... Isso pode levar alguns minutos.';
+                    startPolling(data.task_id, data.params);
+                } else {
+                    // Processamento síncrono (precipitação)
+                    lastResult = data;
+                    displayResult(data);
+                    document.getElementById('loading').classList.remove('show');
+                }
                 
             } catch (error) {
                 document.getElementById('error').style.display = 'block';
                 document.getElementById('errorMessage').textContent = error.message;
-            } finally {
                 document.getElementById('loading').classList.remove('show');
             }
+        }
+        
+        function startPolling(taskId, params) {
+            // Limpar polling anterior se existir
+            if (pollingInterval) {
+                clearInterval(pollingInterval);
+            }
+            
+            let attempts = 0;
+            const maxAttempts = 60; // 10 minutos máximo (10s * 60)
+            
+            pollingInterval = setInterval(async () => {
+                attempts++;
+                
+                try {
+                    const response = await fetch(`/api/task-status/${taskId}`);
+                    const data = await response.json();
+                    
+                    // Atualizar mensagem de status
+                    document.querySelector('#loading p').textContent = data.message || 'Processando...';
+                    
+                    if (data.status === 'completed') {
+                        clearInterval(pollingInterval);
+                        pollingInterval = null;
+                        lastResult = data.result;
+                        displayResult(data.result);
+                        document.getElementById('loading').classList.remove('show');
+                    } else if (data.status === 'error') {
+                        clearInterval(pollingInterval);
+                        pollingInterval = null;
+                        throw new Error(data.error || 'Erro no processamento');
+                    } else if (attempts >= maxAttempts) {
+                        clearInterval(pollingInterval);
+                        pollingInterval = null;
+                        throw new Error('Timeout: O processamento demorou mais de 10 minutos.');
+                    }
+                } catch (error) {
+                    clearInterval(pollingInterval);
+                    pollingInterval = null;
+                    document.getElementById('error').style.display = 'block';
+                    document.getElementById('errorMessage').textContent = error.message;
+                    document.getElementById('loading').classList.remove('show');
+                }
+            }, 10000); // Verificar a cada 10 segundos
         }
         
         function displayResult(data) {
@@ -452,31 +548,73 @@ def process():
         
         # Buscar dados climáticos
         if params.get('type_of_cover') == 'precipitation':
+            # Precipitação: processamento síncrono (rápido via Earth Engine)
             climate_data = fetch_chirps_data(
                 params['latitude'],
                 params['longitude'],
                 params['period_start'],
                 params['period_end']
             )
+            # Calcular sinistro
+            claim = calculate_claim(climate_data, params)
+            
+            return jsonify({
+                'params': params,
+                'data': climate_data,
+                'claim': claim
+            })
         else:
-            climate_data = fetch_agera5_data(
-                params['latitude'],
-                params['longitude'],
-                params['period_start'],
-                params['period_end']
-            )
-        
-        # Calcular sinistro
-        claim = calculate_claim(climate_data, params)
-        
-        return jsonify({
-            'params': params,
-            'data': climate_data,
-            'claim': claim
-        })
+            # Temperatura: processamento assíncrono (CDS demora)
+            task_id = str(uuid.uuid4())
+            
+            with tasks_lock:
+                tasks[task_id] = {
+                    'status': 'pending',
+                    'message': 'Iniciando processamento...',
+                    'params': params,
+                    'result': None,
+                    'error': None
+                }
+            
+            # Iniciar thread em background
+            thread = threading.Thread(target=run_temperature_task, args=(task_id, params))
+            thread.daemon = True
+            thread.start()
+            
+            return jsonify({
+                'async': True,
+                'task_id': task_id,
+                'status': 'pending',
+                'message': 'Processamento iniciado. Aguarde...',
+                'params': params
+            })
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+@app.route('/api/task-status/<task_id>', methods=['GET'])
+def task_status(task_id):
+    """Retorna o status de uma tarefa assíncrona."""
+    with tasks_lock:
+        if task_id not in tasks:
+            return jsonify({'error': 'Tarefa não encontrada'}), 404
+        
+        task = tasks[task_id]
+        response = {
+            'task_id': task_id,
+            'status': task['status'],
+            'message': task['message']
+        }
+        
+        if task['status'] == 'completed':
+            response['result'] = task['result']
+            # Limpar tarefa após entregar resultado
+            del tasks[task_id]
+        elif task['status'] == 'error':
+            response['error'] = task['error']
+            del tasks[task_id]
+        
+        return jsonify(response)
 
 @app.route('/api/download', methods=['POST'])
 def download():

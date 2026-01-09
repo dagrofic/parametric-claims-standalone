@@ -481,6 +481,155 @@ def fetch_agera5_data(latitude: float, longitude: float,
         raise
 
 # ============================================================================
+# BUSCA DE DADOS - TEMPERATURA (AgERA5 via CDS Copernicus)
+# ============================================================================
+
+def fetch_agera5_data_cds(latitude: float, longitude: float,
+                          start_date: str, end_date: str,
+                          statistic: str = '24_hour_minimum') -> list:
+    """
+    Busca dados de temperatura do AgERA5 via CDS Copernicus.
+    Esta função pode demorar vários minutos para completar.
+    
+    Args:
+        latitude: Latitude do ponto
+        longitude: Longitude do ponto
+        start_date: Data inicial (YYYY-MM-DD)
+        end_date: Data final (YYYY-MM-DD)
+        statistic: Estatística desejada (24_hour_minimum, 24_hour_maximum, 24_hour_mean)
+    
+    Retorna:
+        Lista de dicts com {date, value} para cada dia
+    """
+    import cdsapi
+    import xarray as xr
+    import tempfile
+    import os
+    
+    try:
+        # Configurar credenciais do CDS
+        setup_cds_credentials()
+        
+        # Parsear datas
+        start_dt = datetime.strptime(start_date, '%Y-%m-%d')
+        end_dt = datetime.strptime(end_date, '%Y-%m-%d')
+        
+        # Determinar variável baseado na estatística
+        if 'minimum' in statistic.lower() or 'min' in statistic.lower():
+            variable = '2m_temperature_24_hour_minimum'
+        elif 'maximum' in statistic.lower() or 'max' in statistic.lower():
+            variable = '2m_temperature_24_hour_maximum'
+        else:
+            variable = '2m_temperature_24_hour_mean'
+        
+        # Gerar lista de anos, meses e dias
+        years = list(set([str(y) for y in range(start_dt.year, end_dt.year + 1)]))
+        months = [f"{m:02d}" for m in range(1, 13)]
+        days = [f"{d:02d}" for d in range(1, 32)]
+        
+        # Definir área (North, West, South, East)
+        # Adicionar margem de 0.1 grau para garantir cobertura
+        area = [
+            latitude + 0.1,   # North
+            longitude - 0.1,  # West
+            latitude - 0.1,   # South
+            longitude + 0.1   # East
+        ]
+        
+        # Criar cliente CDS
+        client = cdsapi.Client()
+        
+        # Criar arquivo temporário para download
+        with tempfile.NamedTemporaryFile(suffix='.nc', delete=False) as tmp:
+            output_file = tmp.name
+        
+        print(f"Iniciando download do AgERA5 para {variable}...")
+        print(f"Período: {start_date} a {end_date}")
+        print(f"Coordenadas: {latitude}, {longitude}")
+        
+        # Fazer requisição ao CDS
+        client.retrieve(
+            'sis-agrometeorological-indicators',
+            {
+                'variable': variable,
+                'year': years,
+                'month': months,
+                'day': days,
+                'area': area,
+                'format': 'netcdf'
+            },
+            output_file
+        )
+        
+        print(f"Download concluído: {output_file}")
+        
+        # Ler arquivo NetCDF
+        ds = xr.open_dataset(output_file)
+        
+        # Encontrar o nome da variável de temperatura
+        temp_var = None
+        for var in ds.data_vars:
+            if 'temperature' in var.lower() or 't2m' in var.lower():
+                temp_var = var
+                break
+        
+        if temp_var is None:
+            # Usar a primeira variável disponível
+            temp_var = list(ds.data_vars)[0]
+        
+        print(f"Variável de temperatura: {temp_var}")
+        
+        # Extrair dados para o ponto mais próximo
+        data = []
+        
+        # Iterar sobre as datas
+        for time_idx in range(len(ds.time)):
+            time_val = pd.Timestamp(ds.time.values[time_idx])
+            date_str = time_val.strftime('%Y-%m-%d')
+            
+            # Verificar se está no período desejado
+            if start_date <= date_str <= end_date:
+                # Extrair valor no ponto mais próximo
+                temp_data = ds[temp_var].isel(time=time_idx)
+                
+                # Encontrar índice mais próximo
+                if 'lat' in ds.dims:
+                    lat_idx = abs(ds.lat - latitude).argmin().item()
+                    lon_idx = abs(ds.lon - longitude).argmin().item()
+                    value = float(temp_data.isel(lat=lat_idx, lon=lon_idx).values)
+                elif 'latitude' in ds.dims:
+                    lat_idx = abs(ds.latitude - latitude).argmin().item()
+                    lon_idx = abs(ds.longitude - longitude).argmin().item()
+                    value = float(temp_data.isel(latitude=lat_idx, longitude=lon_idx).values)
+                else:
+                    # Tentar pegar o primeiro valor
+                    value = float(temp_data.values.flatten()[0])
+                
+                # Converter de Kelvin para Celsius se necessário
+                if value > 100:  # Provavelmente em Kelvin
+                    value = value - 273.15
+                
+                data.append({
+                    'date': date_str,
+                    'value': round(value, 2)
+                })
+        
+        # Fechar dataset e limpar arquivo temporário
+        ds.close()
+        os.unlink(output_file)
+        
+        # Ordenar por data
+        data.sort(key=lambda x: x['date'])
+        
+        print(f"Dados extraídos: {len(data)} dias")
+        
+        return data
+        
+    except Exception as e:
+        print(f"Erro ao buscar dados AgERA5 do CDS: {e}")
+        raise
+
+# ============================================================================
 # CÁLCULO DE SINISTRO
 # ============================================================================
 
