@@ -522,9 +522,22 @@ def fetch_agera5_data_cds(latitude: float, longitude: float,
         else:
             variable = '2m_temperature_24_hour_mean'
         
-        # Gerar lista de anos, meses e dias
+        # Gerar lista de anos, meses e dias APENAS para o período solicitado
         years = list(set([str(y) for y in range(start_dt.year, end_dt.year + 1)]))
-        months = [f"{m:02d}" for m in range(1, 13)]
+        
+        # Gerar meses do período
+        months_set = set()
+        current = start_dt
+        while current <= end_dt:
+            months_set.add(f"{current.month:02d}")
+            # Avançar para o próximo mês
+            if current.month == 12:
+                current = current.replace(year=current.year + 1, month=1, day=1)
+            else:
+                current = current.replace(month=current.month + 1, day=1)
+        months = sorted(list(months_set))
+        
+        # Para dias, usar todos os dias do mês (o CDS filtra automaticamente)
         days = [f"{d:02d}" for d in range(1, 32)]
         
         # Definir área (North, West, South, East)
