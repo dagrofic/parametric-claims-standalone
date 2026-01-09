@@ -27,14 +27,51 @@ import pandas as pd
 # CONFIGURAÇÃO
 # ============================================================================
 
-# Caminho para credenciais do Earth Engine
+# Credenciais do Earth Engine - pode ser via arquivo ou variável de ambiente JSON
 EE_CREDENTIALS_PATH = os.environ.get(
     'EE_CREDENTIALS_PATH', 
     'credentials/earth_engine_key.json'
 )
 
-# Configuração do CDS API (usa ~/.cdsapirc por padrão)
+# Credenciais JSON do Earth Engine (alternativa via variável de ambiente)
+EE_CREDENTIALS_JSON = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS_JSON', '')
+
+# Configuração do CDS API
 CDS_URL = "https://cds.climate.copernicus.eu/api"
+CDS_API_KEY = os.environ.get('CDS_API_KEY', '')
+
+def get_ee_credentials_file():
+    """
+    Retorna o caminho para o arquivo de credenciais do Earth Engine.
+    Se as credenciais estiverem em variável de ambiente, cria um arquivo temporário.
+    """
+    # Primeiro, verificar se há credenciais JSON na variável de ambiente
+    if EE_CREDENTIALS_JSON:
+        # Criar arquivo temporário com as credenciais
+        import tempfile
+        fd, temp_path = tempfile.mkstemp(suffix='.json', prefix='ee_credentials_')
+        with os.fdopen(fd, 'w') as f:
+            f.write(EE_CREDENTIALS_JSON)
+        return temp_path
+    
+    # Se não, usar o caminho do arquivo tradicional
+    if os.path.exists(EE_CREDENTIALS_PATH):
+        return EE_CREDENTIALS_PATH
+    
+    return None
+
+def setup_cds_credentials():
+    """
+    Configura as credenciais do CDS API se estiverem em variáveis de ambiente.
+    """
+    if CDS_API_KEY:
+        # Criar arquivo .cdsapirc no diretório home
+        cdsapirc_path = os.path.expanduser('~/.cdsapirc')
+        with open(cdsapirc_path, 'w') as f:
+            f.write(f"url: {CDS_URL}\n")
+            f.write(f"key: {CDS_API_KEY}\n")
+        return True
+    return False
 
 # ============================================================================
 # PARSER DE HTML
@@ -175,16 +212,24 @@ def fetch_chirps_data(latitude: float, longitude: float,
     try:
         import ee
         
-        # Autenticar com conta de serviço
-        if os.path.exists(EE_CREDENTIALS_PATH):
+        # Obter arquivo de credenciais (de variável de ambiente ou arquivo)
+        credentials_file = get_ee_credentials_file()
+        
+        if credentials_file:
+            # Ler o JSON para obter o email da conta de serviço
+            with open(credentials_file, 'r') as f:
+                creds_data = json.load(f)
+            service_account_email = creds_data.get('client_email')
+            
+            # Autenticar com conta de serviço
             credentials = ee.ServiceAccountCredentials(
-                None, 
-                EE_CREDENTIALS_PATH
+                service_account_email, 
+                credentials_file
             )
             ee.Initialize(credentials)
         else:
-            # Tentar autenticação padrão
-            ee.Initialize()
+            # Tentar autenticação padrão (não funcionará em produção)
+            raise Exception("Credenciais do Earth Engine não encontradas. Configure GOOGLE_APPLICATION_CREDENTIALS_JSON.")
         
         # Criar ponto
         point = ee.Geometry.Point([longitude, latitude])
@@ -254,6 +299,9 @@ def fetch_agera5_data(latitude: float, longitude: float,
     try:
         import cdsapi
         import xarray as xr
+        
+        # Configurar credenciais do CDS se estiverem em variáveis de ambiente
+        setup_cds_credentials()
         
         # Converter coordenadas para bounding box (±0.1°)
         north = latitude + 0.1
