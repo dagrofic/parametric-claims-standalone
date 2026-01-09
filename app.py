@@ -185,8 +185,21 @@ HTML_TEMPLATE = '''
         </header>
         
         <div class="card">
-            <h2>1. Cole o HTML da Apólice</h2>
-            <textarea id="htmlContent" placeholder="Cole aqui o conteúdo HTML da apólice..."></textarea>
+            <h2>1. Carregar HTML da Apólice</h2>
+            
+            <div style="margin-bottom: 1rem;">
+                <label style="display: block; margin-bottom: 0.5rem; color: #4ade80;">Opção A: Upload de Arquivo</label>
+                <input type="file" id="fileInput" accept=".html,.htm" onchange="handleFileUpload(event)" 
+                    style="width: 100%; padding: 1rem; background: rgba(0,0,0,0.3); border: 2px dashed rgba(74, 222, 128, 0.5); border-radius: 8px; color: #fff; cursor: pointer;">
+            </div>
+            
+            <div style="text-align: center; margin: 1rem 0; color: #888;">ou</div>
+            
+            <div>
+                <label style="display: block; margin-bottom: 0.5rem; color: #4ade80;">Opção B: Colar Conteúdo HTML</label>
+                <textarea id="htmlContent" placeholder="Cole aqui o conteúdo HTML da apólice..."></textarea>
+            </div>
+            
             <button class="btn" onclick="processarRegulacao()">Processar Regulação</button>
         </div>
         
@@ -222,6 +235,17 @@ HTML_TEMPLATE = '''
     
     <script>
         let lastResult = null;
+        
+        function handleFileUpload(event) {
+            const file = event.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    document.getElementById('htmlContent').value = e.target.result;
+                };
+                reader.readAsText(file);
+            }
+        }
         
         async function processarRegulacao() {
             const htmlContent = document.getElementById('htmlContent').value;
