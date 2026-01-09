@@ -126,22 +126,55 @@ def parse_html_content(html_content: str) -> dict:
                 result['period_start'] = dates[0]
                 result['period_end'] = dates[1]
     
-    # Extrair coordenadas - PRIORIZAR chirps_lat e chirps_lon do HTML
-    # O formato no HTML é: "data":[["1"],[1],[-28.xxx],[-55.xxx],...,[-28.375],[-55.025]]
-    # Os últimos dois valores são chirps_lat e chirps_lon
+    # Extrair coordenadas - PRIORIZAR coordenadas específicas do tipo de cobertura
+    # Para precipitação: chirps_lat e chirps_lon
+    # Para temperatura: AgERA_locs_lat e AgERA_locs_lon
     
-    # Padrão 1: Buscar o array de dados com chirps_lat e chirps_lon
+    # Padrão 0: Buscar AgERA_locs_lat e AgERA_locs_lon (para temperatura)
+    # O formato no HTML é: "data":[["1"],[1],[-28.xxx],[-53.xxx],...,[-28.7],[-53]]
+    # Os últimos dois valores são AgERA_locs_lat e AgERA_locs_lon
+    if 'AgERA_locs_lat' in html_content:
+        # Encontrar o bloco JSON que contém AgERA_locs_lat
+        idx = html_content.find('AgERA_locs_lat')
+        if idx > 0:
+            # Procurar o início do JSON (data-for=)
+            start_idx = html_content.rfind('data-for=', 0, idx)
+            end_idx = html_content.find('</script>', idx)
+            
+            if start_idx > 0 and end_idx > 0:
+                json_block = html_content[start_idx:end_idx]
+                
+                # Procurar o array "data"
+                data_match = re.search(r'"data":\s*(\[\[.*?\]\])', json_block, re.DOTALL)
+                if data_match:
+                    data_str = data_match.group(1)
+                    
+                    # Extrair todos os valores numéricos do array
+                    all_values = re.findall(r'\[([-\d.]+)\]', data_str)
+                    
+                    # Os últimos dois valores são AgERA_locs_lat e AgERA_locs_lon
+                    if len(all_values) >= 2:
+                        lat_val = float(all_values[-2])
+                        lon_val = float(all_values[-1])
+                        if -35 < lat_val < -20 and -60 < lon_val < -40:
+                            result['latitude'] = lat_val
+                            result['longitude'] = lon_val
+                            result['coord_source'] = 'AgERA_locs'
+    
+    # Padrão 1: Buscar o array de dados com chirps_lat e chirps_lon (para precipitação)
     # Formato: [1],[-28.375],[-55.025]] no final do array data
-    data_array_pattern = r'"data":\s*\[\[.*?\],\[([-\d.]+)\],\[([-\d.]+)\]\]'
-    data_match = re.search(data_array_pattern, html_content)
-    
-    if data_match:
-        lat_val = float(data_match.group(1))
-        lon_val = float(data_match.group(2))
-        # Verificar se são coordenadas válidas do Brasil
-        if -35 < lat_val < -20 and -60 < lon_val < -40:
-            result['latitude'] = lat_val
-            result['longitude'] = lon_val
+    if 'latitude' not in result:
+        data_array_pattern = r'"data":\s*\[\[.*?\],\[([-\d.]+)\],\[([-\d.]+)\]\]'
+        data_match = re.search(data_array_pattern, html_content)
+        
+        if data_match:
+            lat_val = float(data_match.group(1))
+            lon_val = float(data_match.group(2))
+            # Verificar se são coordenadas válidas do Brasil
+            if -35 < lat_val < -20 and -60 < lon_val < -40:
+                result['latitude'] = lat_val
+                result['longitude'] = lon_val
+                result['coord_source'] = 'chirps'
     
     # Padrão 2: Buscar padrão [id],[lat],[lon]] no final de arrays JSON
     if 'latitude' not in result:
@@ -313,15 +346,15 @@ def fetch_chirps_data(latitude: float, longitude: float,
         raise
 
 # ============================================================================
-# BUSCA DE DADOS - TEMPERATURA (ERA5-Land via Earth Engine)
+# BUSCA DE DADOS - TEMPERATURA (ERA5 Daily Aggregates via Earth Engine)
 # ============================================================================
 
 def fetch_agera5_data(latitude: float, longitude: float,
                       start_date: str, end_date: str,
                       statistic: str = '24_hour_minimum') -> list:
     """
-    Busca dados de temperatura do ERA5-Land via Google Earth Engine.
-    Usa Earth Engine em vez de CDS para evitar timeouts.
+    Busca dados de temperatura do ERA5 Daily Aggregates via Google Earth Engine.
+    Usa o dataset ECMWF/ERA5_DAILY que já tem temperaturas min/max/mean diárias pré-calculadas.
     
     Args:
         latitude: Latitude do ponto
@@ -362,64 +395,39 @@ def fetch_agera5_data(latitude: float, longitude: float,
         end_date_adjusted = end_dt.strftime('%Y-%m-%d')
         
         # Determinar qual banda usar baseado na estatística
-        # ERA5-Land tem dados horários, precisamos agregar por dia
+        # ERA5_DAILY já tem as temperaturas diárias pré-calculadas
         if 'minimum' in statistic.lower() or 'min' in statistic.lower():
-            reducer = ee.Reducer.min()
-            reducer_name = 'min'
+            band_name = 'minimum_2m_air_temperature'
         elif 'maximum' in statistic.lower() or 'max' in statistic.lower():
-            reducer = ee.Reducer.max()
-            reducer_name = 'max'
+            band_name = 'maximum_2m_air_temperature'
         else:
-            reducer = ee.Reducer.mean()
-            reducer_name = 'mean'
+            band_name = 'mean_2m_air_temperature'
         
-        # Buscar coleção ERA5-Land (temperatura a 2m)
-        collection = ee.ImageCollection('ECMWF/ERA5_LAND/HOURLY') \
+        # Buscar coleção ERA5 Daily Aggregates
+        collection = ee.ImageCollection('ECMWF/ERA5_DAILY') \
             .filterDate(start_date, end_date_adjusted) \
             .filterBounds(point) \
-            .select('temperature_2m')
+            .select(band_name)
         
-        # Agrupar por dia e aplicar reducer
-        def get_daily_temp(date):
-            date = ee.Date(date)
-            next_date = date.advance(1, 'day')
-            daily = collection.filterDate(date, next_date)
-            
-            # Aplicar reducer (min, max ou mean)
-            if reducer_name == 'min':
-                daily_image = daily.min()
-            elif reducer_name == 'max':
-                daily_image = daily.max()
-            else:
-                daily_image = daily.mean()
+        # Função para extrair valor de cada imagem
+        def extract_value(image):
+            # Extrair data da imagem
+            date = ee.Date(image.get('system:time_start'))
             
             # Extrair valor no ponto
-            value = daily_image.reduceRegion(
+            value = image.reduceRegion(
                 reducer=ee.Reducer.first(),
                 geometry=point,
-                scale=11132
-            ).get('temperature_2m')
+                scale=27830  # Resolução do ERA5 (~27km)
+            ).get(band_name)
             
             return ee.Feature(None, {
                 'date': date.format('yyyy-MM-dd'),
                 'value': value
             })
         
-        # Gerar lista de datas
-        start_dt = datetime.strptime(start_date, '%Y-%m-%d')
-        end_dt_obj = datetime.strptime(end_date, '%Y-%m-%d')
-        
-        dates = []
-        current = start_dt
-        while current <= end_dt_obj:
-            dates.append(current.strftime('%Y-%m-%d'))
-            current += timedelta(days=1)
-        
-        # Converter para lista Earth Engine
-        date_list = ee.List(dates)
-        
-        # Mapear sobre as datas
-        features = date_list.map(get_daily_temp)
+        # Mapear sobre a coleção
+        features = collection.map(extract_value)
         result = ee.FeatureCollection(features).getInfo()
         
         # Formatar resultado
