@@ -584,7 +584,12 @@ def fetch_agera5_data_cds(latitude: float, longitude: float,
         print(f"Download concluído: {output_file}")
         
         # Ler arquivo NetCDF
-        ds = xr.open_dataset(output_file)
+        # Tentar abrir com netcdf4, se falhar usar scipy
+        try:
+            ds = xr.open_dataset(output_file, engine='netcdf4')
+        except Exception as e:
+            print(f"Erro com netcdf4, tentando scipy: {e}")
+            ds = xr.open_dataset(output_file, engine='scipy')
         
         # Encontrar o nome da variável de temperatura
         temp_var = None
