@@ -216,12 +216,35 @@ HTML_TEMPLATE = '''
             </div>
             
             <div class="card">
-                <h2>3. Resultado do Sinistro</h2>
+                <h2>3. Parâmetros de Cálculo</h2>
+                <p style="color: #888; margin-bottom: 1rem;">Preencha os valores abaixo para calcular a indenização:</p>
+                <div class="result-grid">
+                    <div class="result-item">
+                        <label>Limit of Indemnity (R$)</label>
+                        <input type="number" id="limitInput" placeholder="Ex: 740000" 
+                            style="width: 100%; padding: 0.5rem; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.2); border-radius: 4px; color: #fff; font-size: 1rem;">
+                    </div>
+                    <div class="result-item">
+                        <label>Tick (R$ por mm)</label>
+                        <input type="number" id="tickInput" placeholder="Ex: 1644.44" step="0.01"
+                            style="width: 100%; padding: 0.5rem; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.2); border-radius: 4px; color: #fff; font-size: 1rem;">
+                    </div>
+                    <div class="result-item">
+                        <label>Deductible (%)</label>
+                        <input type="number" id="deductibleInput" placeholder="Ex: 0" value="0" min="0" max="100"
+                            style="width: 100%; padding: 0.5rem; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.2); border-radius: 4px; color: #fff; font-size: 1rem;">
+                    </div>
+                </div>
+                <button class="btn" onclick="calcularSinistro()" style="background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); margin-top: 1rem;">Calcular Sinistro</button>
+            </div>
+            
+            <div class="card" id="claimResult" style="display: none;">
+                <h2>4. Resultado do Sinistro</h2>
                 <div class="result-grid" id="claim"></div>
             </div>
             
             <div class="card">
-                <h2>4. Dados Climáticos</h2>
+                <h2>5. Dados Climáticos</h2>
                 <div id="dataTable"></div>
                 <button class="btn download-btn" onclick="downloadExcel()">Baixar Relatório Excel</button>
             </div>
@@ -294,17 +317,9 @@ HTML_TEMPLATE = '''
             `;
             document.getElementById('params').innerHTML = paramsHtml;
             
-            // Sinistro
-            const triggered = data.claim.triggered;
-            const statusClass = triggered ? 'warning' : 'success';
-            const statusText = triggered ? 'SINISTRO ACIONADO' : 'SEM SINISTRO';
-            
-            const claimHtml = `
-                <div class="result-item"><label>Valor Total/Mínimo</label><value>${data.claim.total_value.toFixed(2)}</value></div>
-                <div class="result-item"><label>Status</label><span class="status ${statusClass}">${statusText}</span></div>
-                <div class="result-item"><label>Indenização</label><value>R$ ${data.claim.payout.toLocaleString('pt-BR', {minimumFractionDigits: 2})}</value></div>
-            `;
-            document.getElementById('claim').innerHTML = claimHtml;
+            // Não mostrar resultado do sinistro automaticamente
+            // O usuário precisa preencher Limit e Tick primeiro
+            document.getElementById('claimResult').style.display = 'none';
             
             // Tabela de dados
             let tableHtml = '<table><thead><tr><th>Data</th><th>Valor</th></tr></thead><tbody>';
@@ -318,6 +333,77 @@ HTML_TEMPLATE = '''
             document.getElementById('dataTable').innerHTML = tableHtml;
             
             document.getElementById('result').classList.add('show');
+        }
+        
+        function calcularSinistro() {
+            if (!lastResult) {
+                alert('Por favor, processe uma apólice primeiro.');
+                return;
+            }
+            
+            const limitInput = document.getElementById('limitInput').value;
+            const tickInput = document.getElementById('tickInput').value;
+            const deductibleInput = document.getElementById('deductibleInput').value || 0;
+            
+            if (!limitInput || !tickInput) {
+                alert('Por favor, preencha os campos Limit e Tick.');
+                return;
+            }
+            
+            const limit = parseFloat(limitInput);
+            const tick = parseFloat(tickInput);
+            const deductible = parseFloat(deductibleInput) / 100;
+            
+            const strike = lastResult.params.strike || 450;
+            const exitPoint = lastResult.params.exit_point || 0;
+            const totalValue = lastResult.claim.total_value;
+            const typeOfCover = lastResult.params.type_of_cover;
+            
+            let triggered = false;
+            let payout = 0;
+            
+            if (typeOfCover === 'precipitation') {
+                // Precipitação: sinistro se total < strike
+                if (totalValue < strike) {
+                    triggered = true;
+                    const difference = strike - totalValue;
+                    payout = difference * tick;
+                    // Aplicar deductible
+                    payout = payout * (1 - deductible);
+                    // Limitar ao Limit
+                    payout = Math.min(payout, limit);
+                }
+            } else {
+                // Temperatura: sinistro se mínimo < strike
+                if (totalValue < strike) {
+                    triggered = true;
+                    const difference = strike - totalValue;
+                    payout = difference * tick;
+                    payout = payout * (1 - deductible);
+                    payout = Math.min(payout, limit);
+                }
+            }
+            
+            // Atualizar lastResult com os novos valores
+            lastResult.params.limit = limit;
+            lastResult.params.tick = tick;
+            lastResult.claim.payout = payout;
+            lastResult.claim.triggered = triggered;
+            
+            // Mostrar resultado
+            const statusClass = triggered ? 'warning' : 'success';
+            const statusText = triggered ? 'SINISTRO ACIONADO' : 'SEM SINISTRO';
+            const difference = strike - totalValue;
+            
+            const claimHtml = `
+                <div class="result-item"><label>Precipitação Observada</label><value>${totalValue.toFixed(2)} mm</value></div>
+                <div class="result-item"><label>Strike (Trigger)</label><value>${strike} mm</value></div>
+                <div class="result-item"><label>Diferença</label><value>${difference.toFixed(2)} mm</value></div>
+                <div class="result-item"><label>Status</label><span class="status ${statusClass}">${statusText}</span></div>
+                <div class="result-item"><label>Indenização</label><value>R$ ${payout.toLocaleString('pt-BR', {minimumFractionDigits: 2})}</value></div>
+            `;
+            document.getElementById('claim').innerHTML = claimHtml;
+            document.getElementById('claimResult').style.display = 'block';
         }
         
         function downloadExcel() {

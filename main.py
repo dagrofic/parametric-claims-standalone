@@ -126,31 +126,45 @@ def parse_html_content(html_content: str) -> dict:
                 result['period_start'] = dates[0]
                 result['period_end'] = dates[1]
     
-    # Extrair coordenadas - múltiplos padrões
-    # Padrão 1: Leaflet setView
-    leaflet_pattern = r'setView\(\s*\[\s*([-\d.]+)\s*,\s*([-\d.]+)\s*\]'
-    leaflet_match = re.search(leaflet_pattern, html_content)
-    if leaflet_match:
-        result['latitude'] = float(leaflet_match.group(1))
-        result['longitude'] = float(leaflet_match.group(2))
+    # Extrair coordenadas - PRIORIZAR chirps_lat e chirps_lon do HTML
+    # Padrão 1: Buscar coordenadas CHIRPS específicas (mais preciso)
+    chirps_lat_pattern = r'"chirps_lat"\s*:\s*([\-\d.]+)'
+    chirps_lon_pattern = r'"chirps_lon"\s*:\s*([\-\d.]+)'
+    chirps_lat_match = re.search(chirps_lat_pattern, html_content)
+    chirps_lon_match = re.search(chirps_lon_pattern, html_content)
+    
+    if chirps_lat_match and chirps_lon_match:
+        result['latitude'] = float(chirps_lat_match.group(1))
+        result['longitude'] = float(chirps_lon_match.group(1))
     else:
-        # Padrão 2: Latitude/Longitude explícitos
-        lat_pattern = r'[Ll]at(?:itude)?\s*[:\s]\s*([-]?\d+\.\d+)'
-        lon_pattern = r'[Ll]on(?:gitude)?\s*[:\s]\s*([-]?\d+\.\d+)'
-        lat_match = re.search(lat_pattern, html_content)
-        lon_match = re.search(lon_pattern, html_content)
-        if lat_match and lon_match:
-            result['latitude'] = float(lat_match.group(1))
-            result['longitude'] = float(lon_match.group(1))
-        else:
-            # Padrão 3: Buscar coordenadas típicas do Brasil
-            # Latitude: -28.xxx a -29.xxx (Sul do Brasil)
-            lat_matches = re.findall(r'(-28\.\d{3,}|-29\.\d{3,})', html_content)
-            lon_matches = re.findall(r'(-5[0-3]\.\d{3,})', html_content)
-            if lat_matches and lon_matches:
-                # Pegar a primeira ocorrência única
-                result['latitude'] = float(lat_matches[0])
-                result['longitude'] = float(lon_matches[0])
+        # Padrão 2: Buscar coordenadas em tabela de dados (formato JSON)
+        # Procurar padrão [-28.375],[-55.025] em arrays JSON
+        json_coords_pattern = r'\[([\-\d.]+)\],\[([\-\d.]+)\]\]\]'
+        json_match = re.search(json_coords_pattern, html_content)
+        if json_match:
+            lat_val = float(json_match.group(1))
+            lon_val = float(json_match.group(2))
+            # Verificar se são coordenadas válidas do Brasil
+            if -35 < lat_val < -20 and -60 < lon_val < -40:
+                result['latitude'] = lat_val
+                result['longitude'] = lon_val
+        
+        # Padrão 3: Leaflet setView (fallback)
+        if 'latitude' not in result:
+            leaflet_pattern = r'setView\(\s*\[\s*([\-\d.]+)\s*,\s*([\-\d.]+)\s*\]'
+            leaflet_match = re.search(leaflet_pattern, html_content)
+            if leaflet_match:
+                result['latitude'] = float(leaflet_match.group(1))
+                result['longitude'] = float(leaflet_match.group(2))
+            else:
+                # Padrão 4: Latitude/Longitude explícitos
+                lat_pattern = r'[Ll]at(?:itude)?\s*[:\s]\s*([\-]?\d+\.\d+)'
+                lon_pattern = r'[Ll]on(?:gitude)?\s*[:\s]\s*([\-]?\d+\.\d+)'
+                lat_match = re.search(lat_pattern, html_content)
+                lon_match = re.search(lon_pattern, html_content)
+                if lat_match and lon_match:
+                    result['latitude'] = float(lat_match.group(1))
+                    result['longitude'] = float(lon_match.group(1))
     
     # Extrair parâmetros financeiros com tratamento de erro
     strike_match = re.search(r'[Ss]trike[:\s]*(\d+\.?\d*)', html_content)
