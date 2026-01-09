@@ -313,14 +313,15 @@ def fetch_chirps_data(latitude: float, longitude: float,
         raise
 
 # ============================================================================
-# BUSCA DE DADOS - AgERA5 (TEMPERATURA)
+# BUSCA DE DADOS - TEMPERATURA (ERA5-Land via Earth Engine)
 # ============================================================================
 
 def fetch_agera5_data(latitude: float, longitude: float,
                       start_date: str, end_date: str,
                       statistic: str = '24_hour_minimum') -> list:
     """
-    Busca dados de temperatura do AgERA5 via CDS Copernicus API.
+    Busca dados de temperatura do ERA5-Land via Google Earth Engine.
+    Usa Earth Engine em vez de CDS para evitar timeouts.
     
     Args:
         latitude: Latitude do ponto
@@ -333,107 +334,123 @@ def fetch_agera5_data(latitude: float, longitude: float,
         Lista de dicts com {date, value} para cada dia
     """
     try:
-        import cdsapi
-        import xarray as xr
+        import ee
         
-        # Configurar credenciais do CDS se estiverem em variáveis de ambiente
-        setup_cds_credentials()
+        # Obter arquivo de credenciais (de variável de ambiente ou arquivo)
+        credentials_file = get_ee_credentials_file()
         
-        # Converter coordenadas para bounding box (±0.1°)
-        north = latitude + 0.1
-        south = latitude - 0.1
-        west = longitude - 0.1
-        east = longitude + 0.1
-        
-        # Extrair anos e meses do período
-        start_dt = datetime.strptime(start_date, '%Y-%m-%d')
-        end_dt = datetime.strptime(end_date, '%Y-%m-%d')
-        
-        years = list(set([str(y) for y in range(start_dt.year, end_dt.year + 1)]))
-        months = [f"{m:02d}" for m in range(1, 13)]
-        days = [f"{d:02d}" for d in range(1, 32)]
-        
-        # Criar cliente CDS
-        client = cdsapi.Client()
-        
-        # Fazer requisição
-        with tempfile.NamedTemporaryFile(suffix='.nc', delete=False) as tmp:
-            tmp_path = tmp.name
-        
-        request = {
-            'variable': '2m_temperature',
-            'statistic': [statistic],
-            'year': years,
-            'month': months,
-            'day': days,
-            'version': '2_0',
-            'area': [north, west, south, east]
-        }
-        
-        print(f"Baixando dados do CDS Copernicus...")
-        print(f"Período: {start_date} a {end_date}")
-        print(f"Coordenadas: lat={latitude}, lon={longitude}")
-        
-        client.retrieve(
-            'sis-agrometeorological-indicators',
-            request,
-            tmp_path
-        )
-        
-        # Processar arquivo NetCDF
-        ds = xr.open_dataset(tmp_path)
-        
-        # Encontrar a variável de temperatura
-        temp_var = None
-        for var in ds.data_vars:
-            if 'temperature' in var.lower() or 't2m' in var.lower():
-                temp_var = var
-                break
-        
-        if temp_var is None:
-            temp_var = list(ds.data_vars)[0]
-        
-        # Extrair dados
-        data = []
-        for time_idx in range(len(ds.time)):
-            time_val = pd.Timestamp(ds.time.values[time_idx])
-            date_str = time_val.strftime('%Y-%m-%d')
+        if credentials_file:
+            # Ler o JSON para obter o email da conta de serviço
+            with open(credentials_file, 'r') as f:
+                creds_data = json.load(f)
+            service_account_email = creds_data.get('client_email')
             
-            # Filtrar por período
-            if date_str < start_date or date_str > end_date:
-                continue
+            # Autenticar com conta de serviço
+            credentials = ee.ServiceAccountCredentials(
+                service_account_email, 
+                credentials_file
+            )
+            ee.Initialize(credentials)
+        else:
+            raise Exception("Credenciais do Earth Engine não encontradas. Configure GOOGLE_APPLICATION_CREDENTIALS_JSON.")
+        
+        # Criar ponto
+        point = ee.Geometry.Point([longitude, latitude])
+        
+        # Ajustar end_date para incluir o último dia (filterDate é exclusivo)
+        end_dt = datetime.strptime(end_date, '%Y-%m-%d') + timedelta(days=1)
+        end_date_adjusted = end_dt.strftime('%Y-%m-%d')
+        
+        # Determinar qual banda usar baseado na estatística
+        # ERA5-Land tem dados horários, precisamos agregar por dia
+        if 'minimum' in statistic.lower() or 'min' in statistic.lower():
+            reducer = ee.Reducer.min()
+            reducer_name = 'min'
+        elif 'maximum' in statistic.lower() or 'max' in statistic.lower():
+            reducer = ee.Reducer.max()
+            reducer_name = 'max'
+        else:
+            reducer = ee.Reducer.mean()
+            reducer_name = 'mean'
+        
+        # Buscar coleção ERA5-Land (temperatura a 2m)
+        collection = ee.ImageCollection('ECMWF/ERA5_LAND/HOURLY') \
+            .filterDate(start_date, end_date_adjusted) \
+            .filterBounds(point) \
+            .select('temperature_2m')
+        
+        # Agrupar por dia e aplicar reducer
+        def get_daily_temp(date):
+            date = ee.Date(date)
+            next_date = date.advance(1, 'day')
+            daily = collection.filterDate(date, next_date)
             
-            # Pegar valor do pixel mais próximo
-            temp_data = ds[temp_var].isel(time=time_idx)
-            
-            # Encontrar índices mais próximos
-            if 'lat' in ds.coords:
-                lat_idx = abs(ds.lat - latitude).argmin().item()
-                lon_idx = abs(ds.lon - longitude).argmin().item()
-                value = float(temp_data.isel(lat=lat_idx, lon=lon_idx).values)
+            # Aplicar reducer (min, max ou mean)
+            if reducer_name == 'min':
+                daily_image = daily.min()
+            elif reducer_name == 'max':
+                daily_image = daily.max()
             else:
-                # Média da área
-                value = float(temp_data.mean().values)
+                daily_image = daily.mean()
             
-            # Converter de Kelvin para Celsius se necessário
-            if value > 100:
-                value = value - 273.15
+            # Extrair valor no ponto
+            value = daily_image.reduceRegion(
+                reducer=ee.Reducer.first(),
+                geometry=point,
+                scale=11132
+            ).get('temperature_2m')
             
-            data.append({
-                'date': date_str,
-                'value': round(value, 2)
+            return ee.Feature(None, {
+                'date': date.format('yyyy-MM-dd'),
+                'value': value
             })
         
-        # Limpar arquivo temporário
-        os.unlink(tmp_path)
+        # Gerar lista de datas
+        start_dt = datetime.strptime(start_date, '%Y-%m-%d')
+        end_dt_obj = datetime.strptime(end_date, '%Y-%m-%d')
+        
+        dates = []
+        current = start_dt
+        while current <= end_dt_obj:
+            dates.append(current.strftime('%Y-%m-%d'))
+            current += timedelta(days=1)
+        
+        # Converter para lista Earth Engine
+        date_list = ee.List(dates)
+        
+        # Mapear sobre as datas
+        features = date_list.map(get_daily_temp)
+        result = ee.FeatureCollection(features).getInfo()
+        
+        # Formatar resultado
+        data = []
+        for feature in result['features']:
+            props = feature['properties']
+            value = props['value']
+            
+            if value is not None:
+                # Converter de Kelvin para Celsius
+                value_celsius = value - 273.15
+                data.append({
+                    'date': props['date'],
+                    'value': round(value_celsius, 2)
+                })
+            else:
+                data.append({
+                    'date': props['date'],
+                    'value': None
+                })
         
         # Ordenar por data
         data.sort(key=lambda x: x['date'])
         
+        # Remover entradas com valor None
+        data = [d for d in data if d['value'] is not None]
+        
         return data
         
     except Exception as e:
-        print(f"Erro ao buscar dados AgERA5: {e}")
+        print(f"Erro ao buscar dados de temperatura: {e}")
         raise
 
 # ============================================================================
