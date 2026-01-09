@@ -514,13 +514,16 @@ def fetch_agera5_data_cds(latitude: float, longitude: float,
         start_dt = datetime.strptime(start_date, '%Y-%m-%d')
         end_dt = datetime.strptime(end_date, '%Y-%m-%d')
         
-        # Determinar variável baseado na estatística
+        # Variável é sempre '2m_temperature', a estatística é separada
+        variable = '2m_temperature'
+        
+        # Determinar estatística
         if 'minimum' in statistic.lower() or 'min' in statistic.lower():
-            variable = '2m_temperature_24_hour_minimum'
+            stat_value = '24_hour_minimum'
         elif 'maximum' in statistic.lower() or 'max' in statistic.lower():
-            variable = '2m_temperature_24_hour_maximum'
+            stat_value = '24_hour_maximum'
         else:
-            variable = '2m_temperature_24_hour_mean'
+            stat_value = '24_hour_mean'
         
         # Gerar lista de anos, meses e dias APENAS para o período solicitado
         years = list(set([str(y) for y in range(start_dt.year, end_dt.year + 1)]))
@@ -561,14 +564,17 @@ def fetch_agera5_data_cds(latitude: float, longitude: float,
         print(f"Coordenadas: {latitude}, {longitude}")
         
         # Fazer requisição ao CDS
+        # Nota: O CDS requer variable, statistic e version separados
         client.retrieve(
             'sis-agrometeorological-indicators',
             {
                 'variable': variable,
+                'statistic': stat_value,
                 'year': years,
                 'month': months,
                 'day': days,
                 'area': area,
+                'version': '1_1',
                 'format': 'netcdf'
             },
             output_file
