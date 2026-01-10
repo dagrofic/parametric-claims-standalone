@@ -583,17 +583,39 @@ def fetch_agera5_data_cds(latitude: float, longitude: float,
         
         print(f"Download concluído: {output_file}")
         
+        # Verificar se o arquivo é um ZIP e extrair
+        import zipfile
+        actual_nc_file = output_file
+        
+        # Verificar magic bytes do arquivo
+        with open(output_file, 'rb') as f:
+            magic = f.read(4)
+        
+        if magic[:2] == b'PK':  # É um arquivo ZIP
+            print("Arquivo é um ZIP, extraindo...")
+            extract_dir = tempfile.mkdtemp()
+            with zipfile.ZipFile(output_file, 'r') as zip_ref:
+                zip_ref.extractall(extract_dir)
+            
+            # Encontrar o arquivo .nc dentro do ZIP
+            for root, dirs, files in os.walk(extract_dir):
+                for file in files:
+                    if file.endswith('.nc'):
+                        actual_nc_file = os.path.join(root, file)
+                        print(f"Arquivo NetCDF encontrado: {actual_nc_file}")
+                        break
+        
         # Ler arquivo NetCDF
         # Tentar abrir com h5netcdf (suporta NetCDF4), se falhar tentar scipy
         try:
-            ds = xr.open_dataset(output_file, engine='h5netcdf')
+            ds = xr.open_dataset(actual_nc_file, engine='h5netcdf')
         except Exception as e:
             print(f"Erro com h5netcdf: {e}")
             try:
-                ds = xr.open_dataset(output_file, engine='netcdf4')
+                ds = xr.open_dataset(actual_nc_file, engine='netcdf4')
             except Exception as e2:
                 print(f"Erro com netcdf4, tentando scipy: {e2}")
-                ds = xr.open_dataset(output_file, engine='scipy')
+                ds = xr.open_dataset(actual_nc_file, engine='scipy')
         
         # Encontrar o nome da variável de temperatura
         temp_var = None
