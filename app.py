@@ -267,7 +267,7 @@ HTML_TEMPLATE = '''
                             style="width: 100%; padding: 0.5rem; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.2); border-radius: 4px; color: #fff; font-size: 1rem;">
                     </div>
                     <div class="result-item">
-                        <label>Tick (R$ por mm)</label>
+                        <label id="tickLabel">Tick (R$)</label>
                         <input type="number" id="tickInput" placeholder="Ex: 1644.44" step="0.01"
                             style="width: 100%; padding: 0.5rem; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.2); border-radius: 4px; color: #fff; font-size: 1rem;">
                     </div>
@@ -402,14 +402,24 @@ HTML_TEMPLATE = '''
         }
         
         function displayResult(data) {
-            // Parâmetros
+            const isTemperature = data.params.type_of_cover === 'temperature';
+            const unit = isTemperature ? '°C' : 'mm';
+            const typeLabel = isTemperature ? 'Temperatura Mínima' : 'Precipitação';
+            
+            // Atualizar label do Tick dinamicamente
+            document.getElementById('tickLabel').textContent = `Tick (R$ por ${unit})`;
+            
+            // Parâmetros com unidades corretas
+            const strikeValue = data.params.strike ? `${data.params.strike} ${unit}` : 'N/A';
+            const exitValue = data.params.exit_point ? `${data.params.exit_point} ${unit}` : 'N/A';
+            
             const paramsHtml = `
-                <div class="result-item"><label>Tipo</label><value>${data.params.type_of_cover || 'N/A'}</value></div>
+                <div class="result-item"><label>Tipo</label><value>${typeLabel}</value></div>
                 <div class="result-item"><label>Fonte</label><value>${data.params.data_provider || 'N/A'}</value></div>
                 <div class="result-item"><label>Período</label><value>${data.params.period_start || 'N/A'} a ${data.params.period_end || 'N/A'}</value></div>
                 <div class="result-item"><label>Coordenadas</label><value>${data.params.latitude || 'N/A'}, ${data.params.longitude || 'N/A'}</value></div>
-                <div class="result-item"><label>Strike</label><value>${data.params.strike || 'N/A'}</value></div>
-                <div class="result-item"><label>Exit Point</label><value>${data.params.exit_point || 'N/A'}</value></div>
+                <div class="result-item"><label>Strike</label><value>${strikeValue}</value></div>
+                <div class="result-item"><label>Exit Point</label><value>${exitValue}</value></div>
             `;
             document.getElementById('params').innerHTML = paramsHtml;
             
@@ -417,8 +427,9 @@ HTML_TEMPLATE = '''
             // O usuário precisa preencher Limit e Tick primeiro
             document.getElementById('claimResult').style.display = 'none';
             
-            // Tabela de dados
-            let tableHtml = '<table><thead><tr><th>Data</th><th>Valor</th></tr></thead><tbody>';
+            // Tabela de dados com unidade correta
+            const valueHeader = isTemperature ? 'Temperatura Mínima (°C)' : 'Precipitação (mm)';
+            let tableHtml = `<table><thead><tr><th>Data</th><th>${valueHeader}</th></tr></thead><tbody>`;
             data.data.slice(0, 20).forEach(row => {
                 tableHtml += `<tr><td>${row.date}</td><td>${row.value.toFixed(2)}</td></tr>`;
             });
@@ -486,15 +497,19 @@ HTML_TEMPLATE = '''
             lastResult.claim.payout = payout;
             lastResult.claim.triggered = triggered;
             
-            // Mostrar resultado
+            // Mostrar resultado com labels corretos por tipo
             const statusClass = triggered ? 'warning' : 'success';
             const statusText = triggered ? 'SINISTRO ACIONADO' : 'SEM SINISTRO';
             const difference = strike - totalValue;
             
+            const isTemperature = typeOfCover === 'temperature';
+            const unit = isTemperature ? '°C' : 'mm';
+            const observedLabel = isTemperature ? 'Temperatura Mínima Observada' : 'Precipitação Total Observada';
+            
             const claimHtml = `
-                <div class="result-item"><label>Precipitação Observada</label><value>${totalValue.toFixed(2)} mm</value></div>
-                <div class="result-item"><label>Strike (Trigger)</label><value>${strike} mm</value></div>
-                <div class="result-item"><label>Diferença</label><value>${difference.toFixed(2)} mm</value></div>
+                <div class="result-item"><label>${observedLabel}</label><value>${totalValue.toFixed(2)} ${unit}</value></div>
+                <div class="result-item"><label>Strike (Trigger)</label><value>${strike} ${unit}</value></div>
+                <div class="result-item"><label>Diferença</label><value>${difference.toFixed(2)} ${unit}</value></div>
                 <div class="result-item"><label>Status</label><span class="status ${statusClass}">${statusText}</span></div>
                 <div class="result-item"><label>Indenização</label><value>R$ ${payout.toLocaleString('pt-BR', {minimumFractionDigits: 2})}</value></div>
             `;
