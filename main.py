@@ -591,83 +591,127 @@ def fetch_agera5_data_cds(latitude: float, longitude: float,
         with open(output_file, 'rb') as f:
             magic = f.read(4)
         
+        # Lista para armazenar todos os arquivos NetCDF
+        nc_files = []
+        extract_dir = None
+        
         if magic[:2] == b'PK':  # É um arquivo ZIP
             print("Arquivo é um ZIP, extraindo...")
             extract_dir = tempfile.mkdtemp()
             with zipfile.ZipFile(output_file, 'r') as zip_ref:
                 zip_ref.extractall(extract_dir)
             
-            # Encontrar o arquivo .nc dentro do ZIP
+            # Encontrar TODOS os arquivos .nc dentro do ZIP
             for root, dirs, files in os.walk(extract_dir):
                 for file in files:
                     if file.endswith('.nc'):
-                        actual_nc_file = os.path.join(root, file)
-                        print(f"Arquivo NetCDF encontrado: {actual_nc_file}")
-                        break
+                        nc_files.append(os.path.join(root, file))
+            
+            print(f"Arquivos NetCDF encontrados: {len(nc_files)}")
+        else:
+            # Arquivo único (não é ZIP)
+            nc_files = [actual_nc_file]
         
-        # Ler arquivo NetCDF
-        # Tentar abrir com h5netcdf (suporta NetCDF4), se falhar tentar scipy
-        try:
-            ds = xr.open_dataset(actual_nc_file, engine='h5netcdf')
-        except Exception as e:
-            print(f"Erro com h5netcdf: {e}")
-            try:
-                ds = xr.open_dataset(actual_nc_file, engine='netcdf4')
-            except Exception as e2:
-                print(f"Erro com netcdf4, tentando scipy: {e2}")
-                ds = xr.open_dataset(actual_nc_file, engine='scipy')
-        
-        # Encontrar o nome da variável de temperatura
-        temp_var = None
-        for var in ds.data_vars:
-            if 'temperature' in var.lower() or 't2m' in var.lower():
-                temp_var = var
-                break
-        
-        if temp_var is None:
-            # Usar a primeira variável disponível
-            temp_var = list(ds.data_vars)[0]
-        
-        print(f"Variável de temperatura: {temp_var}")
-        
-        # Extrair dados para o ponto mais próximo
+        # Processar todos os arquivos NetCDF e agregar dados
         data = []
         
-        # Iterar sobre as datas
-        for time_idx in range(len(ds.time)):
-            time_val = pd.Timestamp(ds.time.values[time_idx])
-            date_str = time_val.strftime('%Y-%m-%d')
-            
-            # Verificar se está no período desejado
-            if start_date <= date_str <= end_date:
-                # Extrair valor no ponto mais próximo
-                temp_data = ds[temp_var].isel(time=time_idx)
+        for nc_file in nc_files:
+            try:
+                # Tentar abrir com h5netcdf (suporta NetCDF4), se falhar tentar scipy
+                try:
+                    ds = xr.open_dataset(nc_file, engine='h5netcdf')
+                except Exception as e:
+                    try:
+                        ds = xr.open_dataset(nc_file, engine='netcdf4')
+                    except Exception as e2:
+                        ds = xr.open_dataset(nc_file, engine='scipy')
                 
-                # Encontrar índice mais próximo
-                if 'lat' in ds.dims:
-                    lat_idx = abs(ds.lat - latitude).argmin().item()
-                    lon_idx = abs(ds.lon - longitude).argmin().item()
-                    value = float(temp_data.isel(lat=lat_idx, lon=lon_idx).values)
-                elif 'latitude' in ds.dims:
-                    lat_idx = abs(ds.latitude - latitude).argmin().item()
-                    lon_idx = abs(ds.longitude - longitude).argmin().item()
-                    value = float(temp_data.isel(latitude=lat_idx, longitude=lon_idx).values)
+                # Encontrar o nome da variável de temperatura
+                temp_var = None
+                for var in ds.data_vars:
+                    if 'temperature' in var.lower() or 't2m' in var.lower():
+                        temp_var = var
+                        break
+                
+                if temp_var is None:
+                    # Usar a primeira variável disponível
+                    temp_var = list(ds.data_vars)[0]
+                
+                # Extrair dados para o ponto mais próximo
+                # Verificar se há dimensão de tempo
+                if 'time' in ds.dims and len(ds.time) > 0:
+                    for time_idx in range(len(ds.time)):
+                        time_val = pd.Timestamp(ds.time.values[time_idx])
+                        date_str = time_val.strftime('%Y-%m-%d')
+                        
+                        # Verificar se está no período desejado
+                        if start_date <= date_str <= end_date:
+                            # Extrair valor no ponto mais próximo
+                            temp_data = ds[temp_var].isel(time=time_idx)
+                            
+                            # Encontrar índice mais próximo
+                            if 'lat' in ds.dims:
+                                lat_idx = abs(ds.lat - latitude).argmin().item()
+                                lon_idx = abs(ds.lon - longitude).argmin().item()
+                                value = float(temp_data.isel(lat=lat_idx, lon=lon_idx).values)
+                            elif 'latitude' in ds.dims:
+                                lat_idx = abs(ds.latitude - latitude).argmin().item()
+                                lon_idx = abs(ds.longitude - longitude).argmin().item()
+                                value = float(temp_data.isel(latitude=lat_idx, longitude=lon_idx).values)
+                            else:
+                                # Tentar pegar o primeiro valor
+                                value = float(temp_data.values.flatten()[0])
+                            
+                            # Converter de Kelvin para Celsius se necessário
+                            if value > 100:  # Provavelmente em Kelvin
+                                value = value - 273.15
+                            
+                            data.append({
+                                'date': date_str,
+                                'value': round(value, 2)
+                            })
                 else:
-                    # Tentar pegar o primeiro valor
-                    value = float(temp_data.values.flatten()[0])
+                    # Arquivo sem dimensão de tempo - tentar extrair data do nome do arquivo
+                    import re
+                    date_match = re.search(r'(\d{8})', nc_file)
+                    if date_match:
+                        date_str = f"{date_match.group(1)[:4]}-{date_match.group(1)[4:6]}-{date_match.group(1)[6:8]}"
+                        
+                        if start_date <= date_str <= end_date:
+                            # Extrair valor
+                            temp_data = ds[temp_var]
+                            
+                            if 'lat' in ds.dims:
+                                lat_idx = abs(ds.lat - latitude).argmin().item()
+                                lon_idx = abs(ds.lon - longitude).argmin().item()
+                                value = float(temp_data.isel(lat=lat_idx, lon=lon_idx).values)
+                            elif 'latitude' in ds.dims:
+                                lat_idx = abs(ds.latitude - latitude).argmin().item()
+                                lon_idx = abs(ds.longitude - longitude).argmin().item()
+                                value = float(temp_data.isel(latitude=lat_idx, longitude=lon_idx).values)
+                            else:
+                                value = float(temp_data.values.flatten()[0])
+                            
+                            # Converter de Kelvin para Celsius se necessário
+                            if value > 100:
+                                value = value - 273.15
+                            
+                            data.append({
+                                'date': date_str,
+                                'value': round(value, 2)
+                            })
                 
-                # Converter de Kelvin para Celsius se necessário
-                if value > 100:  # Provavelmente em Kelvin
-                    value = value - 273.15
+                ds.close()
                 
-                data.append({
-                    'date': date_str,
-                    'value': round(value, 2)
-                })
+            except Exception as e:
+                print(f"Erro ao processar {nc_file}: {e}")
+                continue
         
-        # Fechar dataset e limpar arquivo temporário
-        ds.close()
+        # Limpar arquivos temporários
         os.unlink(output_file)
+        if extract_dir:
+            import shutil
+            shutil.rmtree(extract_dir, ignore_errors=True)
         
         # Ordenar por data
         data.sort(key=lambda x: x['date'])
