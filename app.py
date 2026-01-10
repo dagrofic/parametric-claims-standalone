@@ -469,25 +469,32 @@ HTML_TEMPLATE = '''
             let triggered = false;
             let payout = 0;
             
+            // Calcular franquia sobre o LMI
+            const franquiaValor = limit * deductible;
+            
             if (typeOfCover === 'precipitation') {
                 // Precipitação: sinistro se total < strike
                 if (totalValue < strike) {
                     triggered = true;
                     const difference = strike - totalValue;
-                    payout = difference * tick;
-                    // Aplicar deductible
-                    payout = payout * (1 - deductible);
-                    // Limitar ao Limit
-                    payout = Math.min(payout, limit);
+                    const indenizacaoBruta = difference * tick;
+                    // Limitar ao Limit primeiro
+                    const indenizacaoLimitada = Math.min(indenizacaoBruta, limit);
+                    // Aplicar franquia: desconta o valor da franquia da indenização
+                    // Se indenização <= franquia, não paga nada
+                    payout = Math.max(0, indenizacaoLimitada - franquiaValor);
                 }
             } else {
                 // Temperatura: sinistro se mínimo < strike
                 if (totalValue < strike) {
                     triggered = true;
                     const difference = strike - totalValue;
-                    payout = difference * tick;
-                    payout = payout * (1 - deductible);
-                    payout = Math.min(payout, limit);
+                    const indenizacaoBruta = difference * tick;
+                    // Limitar ao Limit primeiro
+                    const indenizacaoLimitada = Math.min(indenizacaoBruta, limit);
+                    // Aplicar franquia: desconta o valor da franquia da indenização
+                    // Se indenização <= franquia, não paga nada
+                    payout = Math.max(0, indenizacaoLimitada - franquiaValor);
                 }
             }
             
