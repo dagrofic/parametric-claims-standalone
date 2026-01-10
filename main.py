@@ -214,20 +214,30 @@ def parse_html_content(html_content: str) -> dict:
                 result['longitude'] = float(lon_match.group(1))
     
     # Extrair parâmetros financeiros com tratamento de erro
-    strike_match = re.search(r'[Ss]trike[:\s]*(\d+\.?\d*)', html_content)
-    if strike_match:
-        try:
-            val = strike_match.group(1)
-            if val and val != '.':
-                result['strike'] = float(val)
-        except ValueError:
-            pass
+    # Tentar vários padrões para Strike
+    strike_patterns = [
+        r'[Ss]trike\s*temperature\s*:\s*(-?\d+\.?\d*)\s*°?C?',  # Strike temperature : 3 °C
+        r'[Ss]trike\s*[Pp]recipitation\s*:\s*(\d+\.?\d*)\s*mm',  # Strike Precipitation : 450 mm
+        r'[Ss]trike[:\s]*(\d+\.?\d*)',  # Strike: 450 ou Strike : 450
+    ]
+    for pattern in strike_patterns:
+        strike_match = re.search(pattern, html_content)
+        if strike_match:
+            try:
+                val = strike_match.group(1)
+                if val and val != '.':
+                    result['strike'] = float(val)
+                    break
+            except ValueError:
+                pass
     
     # Tentar vários padrões para Exit Point
     exit_patterns = [
+        r'[Ee]xit\s*temperature\s*:\s*(-?\d+\.?\d*)\s*°?C?',  # Exit temperature : -10 °C
+        r'[Ee]xit\s*[Pp]recipitation\s*:\s*(\d+\.?\d*)\s*mm',  # Exit Precipitation : 0 mm
         r'[Ee]xit\s*[Pp]oint[:\s]*(\d+\.?\d*)',  # Exit Point: 0
-        r'[Ee]xit\s*:\s*(\d+\.?\d*)\s*(?:mm)?',   # Exit :0 mm ou Exit : 0
-        r'[Ee]xit\s*=\s*(\d+\.?\d*)',             # Exit = 0
+        r'[Ee]xit\s*:\s*(-?\d+\.?\d*)\s*(?:mm|°C)?',   # Exit :0 mm ou Exit : -10 °C
+        r'[Ee]xit\s*=\s*(-?\d+\.?\d*)',             # Exit = 0
     ]
     for pattern in exit_patterns:
         exit_match = re.search(pattern, html_content)
