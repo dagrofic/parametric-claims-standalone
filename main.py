@@ -156,7 +156,7 @@ def parse_html_content(html_content: str) -> dict:
                     if len(all_values) >= 2:
                         lat_val = float(all_values[-2])
                         lon_val = float(all_values[-1])
-                        if -35 < lat_val < -20 and -60 < lon_val < -40:
+                        if -35 < lat_val < 5 and -75 < lon_val < -30:  # Range expandido para todo Brasil
                             result['latitude'] = lat_val
                             result['longitude'] = lon_val
                             result['coord_source'] = 'AgERA_locs'
@@ -171,7 +171,7 @@ def parse_html_content(html_content: str) -> dict:
             lat_val = float(data_match.group(1))
             lon_val = float(data_match.group(2))
             # Verificar se são coordenadas válidas do Brasil
-            if -35 < lat_val < -20 and -60 < lon_val < -40:
+            if -35 < lat_val < 5 and -75 < lon_val < -30:  # Range expandido para todo Brasil
                 result['latitude'] = lat_val
                 result['longitude'] = lon_val
                 result['coord_source'] = 'chirps'
@@ -183,7 +183,7 @@ def parse_html_content(html_content: str) -> dict:
         if json_match:
             lat_val = float(json_match.group(1))
             lon_val = float(json_match.group(2))
-            if -35 < lat_val < -20 and -60 < lon_val < -40:
+            if -35 < lat_val < 5 and -75 < lon_val < -30:  # Range expandido para todo Brasil
                 result['latitude'] = lat_val
                 result['longitude'] = lon_val
     
